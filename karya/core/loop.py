@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from karya.core.context import ContextManager
+from karya.core.hil import HILManager, HILLevel
 from karya.core.hw_detect import HardwareTier, detect_tier
 from karya.core.priority import GoalPrioritizer, build_priority_prompt
 from karya.core.safety import SafetyGuard
@@ -53,7 +54,7 @@ class AgentLoop:
         goals: list,
         model: Optional[str] = None,
         base_url: str = "http://localhost:11434",
-        backend: str = "ollama",            # "ollama" | "llamacpp"
+        backend: str = "ollama",
         dry_run: bool = False,
         safe_gpio_pins: Optional[list] = None,
         state_dir=None,
@@ -63,6 +64,7 @@ class AgentLoop:
         serial_triggers: Optional[list] = None,
         thresholds: Optional[list] = None,
         serial_tool_port: Optional[str] = None,
+        hil_config: Optional[dict] = None,      # human-in-the-loop config
     ):
         self.goals = goals
         self._event_queue: queue.Queue = queue.Queue()
@@ -89,6 +91,12 @@ class AgentLoop:
             dry_run=dry_run,
         )
 
+        # HIL manager — human approval for critical decisions
+        self.hil = HILManager.from_config(hil_config or {})
+        if self.hil.enabled:
+            logger.info("HIL enabled — channel: %s | timeout: %ds",
+                        type(self.hil.channel).__name__, self.hil.timeout_sec)
+
         # backend selection
         if backend == "llamacpp":
             llamacpp_url = base_url if "808" in base_url else "http://localhost:8080"
@@ -99,7 +107,7 @@ class AgentLoop:
             logger.info("Using Ollama backend at %s", base_url)
 
         self.prioritizer = GoalPrioritizer()
-        self._goal_last_action: dict = {}   # goal → unix timestamp
+        self._goal_last_action: dict = {}
         self._failed_goals: set = set()
 
         self.registry = ToolRegistry(
@@ -228,7 +236,11 @@ class AgentLoop:
         decision = self._parse_decision(response) or {"tool": "none", "args": {}}
         tool_name = decision.get("tool", "none")
         args = decision.get("args", {})
-        result, success = self._execute_decision(decision)
+        result, success = self._execute_decision(
+            decision,
+            goal=top.goal if top else "",
+            score=top.score if top else 0,
+        )
         print(f"  result  : {result[:100]}")
 
         self.state.record_action(trigger=trigger, tool=tool_name,
@@ -260,11 +272,27 @@ class AgentLoop:
             pass
         return self.backend.extract_tool_call(response)
 
-    def _execute_decision(self, decision: dict) -> tuple:
+    def _execute_decision(self, decision: dict, goal: str = "", score: float = 0) -> tuple:
         tool_name = decision.get("tool", "none")
         args = decision.get("args", {})
         if tool_name == "none":
             return "no action needed", True
+
+        # HIL gate — check if human approval required before executing
+        if self.hil.enabled:
+            level, reason = self.hil.needs_approval(tool_name, args, score)
+            if level.value == "critical":
+                approved, hil_reason = self.hil.request_approval(
+                    tool=tool_name,
+                    args=args,
+                    goal=goal,
+                    priority_score=score,
+                )
+                if not approved:
+                    return f"[HIL denied: {hil_reason}]", False
+            elif level.value == "block":
+                return "[HIL blocked: matches forbidden pattern]", False
+
         result, success = self.registry.execute(tool_name, args)
         if tool_name == "system_info":
             try:

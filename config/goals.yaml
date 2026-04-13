@@ -29,3 +29,62 @@ ollama:
   base_url: "http://localhost:11434"
   # Leave model blank to auto-detect from hardware tier
   model: ""
+
+# ── Human-in-the-loop (HIL) ───────────────────────────────────────────────────
+# karya pauses and waits for human approval before executing CRITICAL actions.
+# CRITICAL = GPIO writes, rm, systemctl stop, kill, high priority score (>= 80)
+#
+# karya is offline-first. HIL is offline-first too.
+# Default channel is file — no internet, no hardware, just files on disk.
+#
+# OFFLINE channels (no internet required):
+#   file         — write JSON to ~/.karya/hil/pending/, respond via touch file
+#   display      — prompt on attached screen/terminal, press y/n
+#   gpio_button  — physical approve/deny buttons wired to GPIO pins (Pi only)
+#   serial       — send over UART to a connected terminal or microcontroller
+#
+# OPTIONAL online channels (only if you happen to have connectivity):
+#   telegram     — inline approve/deny buttons on your phone
+#   slack        — post to channel, reply approve/deny
+#   webhook      — HTTP POST to n8n, Home Assistant, Zapier, anything
+
+hil:
+  enabled: false            # set to true to enable HIL
+  timeout_sec: 120          # seconds to wait before defaulting
+  default_on_timeout: deny  # "deny" (safe) or "approve" (permissive)
+
+  # ── Offline channels — pick one ─────────────────────────────────────────────
+
+  channel: file             # DEFAULT — works everywhere, zero dependencies
+  hil_dir: "~/.karya/hil"  # pending/ approve/ deny/ dirs created here
+
+  # Prompt on attached screen — simplest option, no hardware needed
+  # channel: display
+
+  # Physical buttons on Pi GPIO — most reliable for unattended hardware
+  # channel: gpio_button
+  # approve_pin: 5          # BCM pin — green button, active LOW
+  # deny_pin: 6             # BCM pin — red button, active LOW
+  # led_pin: 13             # optional — blinks while waiting
+
+  # Serial terminal — works over UART, SSH serial console, Arduino
+  # channel: serial
+  # serial_port: "/dev/ttyUSB0"
+  # serial_baud: 115200
+
+  # ── Optional online channels (needs internet) ────────────────────────────────
+
+  # Telegram — fastest on mobile, inline approve/deny buttons
+  # channel: telegram
+  # telegram_bot_token: "123456:ABC-your-bot-token"
+  # telegram_chat_id: "987654321"
+
+  # Slack — good for teams already using Slack
+  # channel: slack
+  # slack_webhook_url: "https://hooks.slack.com/services/T.../B.../"
+  # slack_response_file: "/tmp/karya_hil_responses.txt"
+
+  # Webhook — connect to n8n, Home Assistant, Zapier, any HTTP service
+  # channel: webhook
+  # webhook_notify_url: "https://your-server/karya/notify"
+  # webhook_poll_url:   "https://your-server/karya/decision/{request_id}"

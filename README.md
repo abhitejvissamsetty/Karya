@@ -7,20 +7,17 @@ Offline autonomous agent for low-power hardware — Raspberry Pi, cheap VPS, edg
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://python.org)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-62%20passing-brightgreen.svg)](.github/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-142%20passing-brightgreen.svg)](.github/workflows/ci.yml)
 [![PyPI](https://img.shields.io/badge/pypi-karya-blue.svg)](https://pypi.org/project/karya)
 
 ```
 sensor/event → priority rank → model decides → hardware acts
       ↑                                               ↓
       └──────────────── world state ──────────────────┘
-                     (JSON on disk, offline)
+                     (JSON on disk, fully offline)
 ```
 
-karya runs on a Raspberry Pi, reads your goals from a plain text file, and works towards them
-autonomously — no internet, no cloud, no user input once started. It monitors system state,
-ranks goals by urgency, calls a local LLM, and executes decisions via shell commands, file
-writes, GPIO pins, or serial messages.
+karya runs on a Raspberry Pi, reads your goals from a plain text file, and works towards them autonomously — no internet, no cloud, no user input once started. It monitors system state, ranks goals by urgency, calls a local LLM, and executes decisions via shell commands, file writes, GPIO pins, or serial messages.
 
 ---
 
@@ -32,14 +29,15 @@ Most AI agent frameworks assume three things that are false on edge hardware:
 - A GPU is available for inference
 - A human is watching and can intervene
 
-karya inverts all three. It is designed for the reality of edge deployments: limited RAM,
-slow CPUs, intermittent or zero connectivity, and unattended operation for days or weeks.
+karya inverts all three. It is designed for the reality of edge deployments: limited RAM, slow CPUs, intermittent or zero connectivity, and unattended operation for days or weeks at a time.
+
+> **Full reasoning:** [Why an LLM and not just cron + scripts?](docs/why-llm-not-scripts.md)
 
 ---
 
 ## Hardware requirements
 
-karya auto-detects your RAM at startup and configures itself. No manual tuning needed.
+karya auto-detects your RAM at startup and configures token budgets automatically. No manual tuning needed.
 
 | Tier | Min RAM | Recommended model | Context | TPS on Pi | Example device |
 |------|---------|-------------------|---------|-----------|----------------|
@@ -64,7 +62,7 @@ git clone https://github.com/yourusername/karya
 cd karya
 pip install -e .
 
-# With optional extras
+# With all optional extras
 pip install karya[all]
 ```
 
@@ -73,7 +71,7 @@ pip install karya[all]
 ## Quickstart
 
 ```bash
-# 1. Start Ollama with the right context length for your Pi
+# 1. Start Ollama with correct context length for your Pi
 OLLAMA_CONTEXT_LENGTH=4096 ollama serve
 
 # 2. Pull a model (auto-recommended based on your RAM)
@@ -119,7 +117,7 @@ dry_run: false
 # GPIO pins karya is allowed to WRITE to (empty = GPIO disabled)
 safe_gpio_pins: [18, 23, 24]
 
-# Threshold triggers — fire immediately when a metric is breached
+# Threshold triggers — fire karya immediately when a metric is breached
 thresholds:
   - metric: disk_used_pct
     op: ">"
@@ -156,16 +154,13 @@ Every cycle, karya runs a four-stage loop:
         └─────────────────── world state (disk) ─────────────────┘
 ```
 
-The **world state** is a compact JSON file on disk updated after every action. It survives
-reboots and is serialised to under 300 tokens for injection into every prompt — giving the
-model continuity without any neural summarisation or second LLM call.
+The **world state** is a compact JSON file on disk, updated after every action. It survives reboots and is serialised to under 300 tokens for injection into every LLM prompt — giving the model continuity without any neural summarisation or second LLM call.
 
 ---
 
 ## Multi-goal priority ranking
 
-When multiple goals exist, karya scores every goal on five dimensions and tackles the most
-urgent one first. No guessing, no round-robin.
+When multiple goals exist, karya scores every goal on five dimensions and tackles the most urgent one first. No guessing, no round-robin — the highest scoring goal always leads.
 
 | Signal | Max pts | Description |
 |--------|---------|-------------|
@@ -201,14 +196,13 @@ karya wakes up on any of these events — not just on a timer.
 |---------|--------|-------------|
 | Cron | Built-in interval | Wake every 30s for routine checks |
 | File watch | inotify / polling | Drop a `.txt` file → karya reads and acts on it |
-| Threshold | /proc metrics | Disk > 85%, temp > 75°C, RAM > 90% |
+| Threshold | `/proc` metrics | Disk > 85%, temp > 75°C, RAM > 90% |
 | GPIO | RPi.GPIO / gpiozero / sysfs | Button press, PIR sensor, relay feedback |
 | Serial | UART / USB | Arduino sensor message, RS-485 device alert |
 
 ### File watch — the dead drop interface
 
-Drop a plain text file into `~/.karya/tasks/` and karya wakes up, reads it, acts on it,
-and moves it to `done/`. Works offline, no network, no terminal needed.
+Drop a plain text file into `~/.karya/tasks/` and karya wakes up, reads it, acts on it, and moves it to `done/`. Works fully offline — no network, no terminal, no SSH needed.
 
 ```bash
 echo "check disk and delete old logs immediately" > ~/.karya/tasks/cleanup.txt
@@ -223,11 +217,11 @@ Every tool works with zero network. The safety guard checks every action before 
 
 | Tool | Actions | Notes |
 |------|---------|-------|
-| `shell` | run any shell command | forbidden patterns enforced, confirm delay for destructive cmds |
-| `file` | read, write, append, exists | write restricted to allowed directories |
-| `system_info` | cpu, memory, disk, temp, processes | reads `/proc` directly, no psutil required |
-| `gpio` | read, write, pulse | pin whitelist required for writes |
-| `serial` | send, read, send_and_read | any UART/USB device, requires pyserial |
+| `shell` | run any shell command | Forbidden patterns enforced, confirm delay for destructive cmds |
+| `file` | read, write, append, exists | Write restricted to allowed directories |
+| `system_info` | cpu, memory, disk, temp, processes | Reads `/proc` directly — no psutil required |
+| `gpio` | read, write, pulse | Pin whitelist required for writes |
+| `serial` | send, read, send_and_read | Any UART/USB device — requires pyserial |
 
 ---
 
@@ -235,7 +229,7 @@ Every tool works with zero network. The safety guard checks every action before 
 
 Every action passes through the safety layer before execution. This cannot be bypassed.
 
-**FORBIDDEN — never execute:**
+**FORBIDDEN — never execute, ever:**
 - `rm -rf /`, `rm -rf ~`, `dd if=...`, fork bombs
 - Remote code execution via `curl | sh` or `wget | bash`
 - Writes to `/boot`, `/etc/passwd`, `/etc/shadow`, `/proc`, `/sys`, `/dev`
@@ -244,15 +238,129 @@ Every action passes through the safety layer before execution. This cannot be by
 - `rm`, `kill`, `pkill`, `systemctl stop`, `systemctl disable`
 - `chmod`, `chown`
 
-**GPIO — write only to whitelisted pins:**
+**GPIO — write only to explicitly whitelisted pins:**
 ```yaml
 safe_gpio_pins: [18, 23, 24]  # in goals.yaml
 ```
 
-**Dry-run mode:**
+**Dry-run mode — log everything, execute nothing:**
 ```bash
-karya start --dry-run   # log everything, execute nothing
+karya start --dry-run
 ```
+
+---
+
+## Human-in-the-loop (HIL) for critical decisions
+
+karya is offline-first. Its HIL system is too.
+
+Before executing any critical action, karya pauses and waits for human approval. Offline channels are the default. Internet channels are entirely optional — only for users who happen to have connectivity and want faster mobile notifications.
+
+```
+AUTO     →  execute immediately        (df -h, system_info, read_file)
+CONFIRM  →  10s pause, then execute    (chmod, mv, chown)
+CRITICAL →  pause, notify, wait       (rm, gpio write, systemctl stop, score >= 80)
+BLOCK    →  never execute             (rm -rf /, dd if=, fork bombs)
+```
+
+### Channels — offline first
+
+| Channel | Internet | How you respond |
+|---------|----------|-----------------|
+| `file` *(default)* | ❌ No | `touch ~/.karya/hil/approved/<id>.approve` |
+| `display` | ❌ No | Type `y` or `n` on attached keyboard or SSH session |
+| `gpio_button` | ❌ No | Press a physical green/red button wired to Pi |
+| `serial` | ❌ No | Type `approve` or `deny` on a UART terminal |
+| `telegram` | ✅ Optional | Tap inline approve/deny buttons on your phone |
+| `slack` | ✅ Optional | Reply `approve <id>` in a Slack channel |
+| `webhook` | ✅ Optional | Any HTTP service — n8n, Home Assistant, Zapier |
+
+karya never requires internet for HIL. If you configure an online channel but connectivity is unavailable, it falls back to `file` automatically — it never blocks on a missing network.
+
+### Enable in goals.yaml
+
+```yaml
+hil:
+  enabled: true
+  timeout_sec: 120
+  default_on_timeout: deny   # "deny" (safe) or "approve" (permissive)
+
+  # ── Offline channels (no internet needed) ─────────────────────────────────
+
+  channel: file              # DEFAULT — zero dependencies, always works
+  hil_dir: "~/.karya/hil"
+
+  # channel: display         # keypress on attached screen or SSH terminal
+  
+  # channel: gpio_button     # physical buttons wired to Pi GPIO pins
+  # approve_pin: 5           # BCM — green button, active LOW
+  # deny_pin: 6              # BCM — red button, active LOW
+  # led_pin: 13              # optional LED — blinks while waiting
+
+  # channel: serial          # type approve/deny on a UART terminal
+  # serial_port: "/dev/ttyUSB0"
+  # serial_baud: 115200
+
+  # ── Optional online channels ───────────────────────────────────────────────
+
+  # channel: telegram
+  # telegram_bot_token: "123456:ABC-your-bot-token"
+  # telegram_chat_id: "987654321"
+
+  # channel: slack
+  # slack_webhook_url: "https://hooks.slack.com/services/..."
+
+  # channel: webhook
+  # webhook_notify_url: "https://your-server/karya/notify"
+  # webhook_poll_url:   "https://your-server/karya/decision/{request_id}"
+```
+
+### How the file channel works (default, fully offline)
+
+karya writes a pending JSON file. You respond by creating a file or appending a line:
+
+```bash
+# Approve
+touch ~/.karya/hil/approved/<request_id>.approve
+
+# Deny
+touch ~/.karya/hil/denied/<request_id>.deny
+
+# Or use the text file
+echo "approve <request_id>" >> ~/.karya/hil/responses.txt
+```
+
+### How the GPIO button channel works (Pi hardware, fully offline)
+
+Wire two momentary buttons to Pi GPIO pins. No internet, no terminal, no files needed. The human physically walks up to the device and presses a button. An optional LED blinks while karya waits.
+
+```
+Green button → GPIO pin 5  (approve)
+Red button   → GPIO pin 6  (deny)
+LED          → GPIO pin 13 (blinks while waiting — optional)
+```
+
+### How the display channel works (screen or SSH, fully offline)
+
+karya prints the pending action to the terminal and waits for a keypress. Works in any SSH session or on a device with an attached keyboard.
+
+```
+════════════════════════════════════════════════════
+  karya — CRITICAL ACTION — approval required
+════════════════════════════════════════════════════
+  Tool   : shell
+  Args   : {"command": "rm /var/log/nginx/access.log.1"}
+  Goal   : keep disk below 85%
+  Reason : command contains 'rm '
+  Score  : 91
+  Timeout: 120s
+════════════════════════════════════════════════════
+  Approve? [y/N]:
+```
+
+### Audit log
+
+Every HIL decision — approved, denied, or timed out — is recorded in `~/.karya/hil/log/hil_audit.jsonl` with full context: tool, args, goal, priority score, reason flagged, who decided, and when.
 
 ---
 
@@ -261,28 +369,29 @@ karya start --dry-run   # log everything, execute nothing
 ### Ollama (recommended)
 
 ```bash
+# Critical on Pi — set context length before starting
 OLLAMA_CONTEXT_LENGTH=4096 ollama serve
 ollama pull qwen2.5:1.5b
 karya start
 ```
 
-> **Pi-specific:** Ollama defaults to 4096 tokens for all models regardless of capability.
-> Always set `OLLAMA_CONTEXT_LENGTH` to match your tier — 2048 for Pi Zero,
-> 4096 for Pi 4 (4GB), 8192 for Pi 5 (8GB+).
+> **Pi-specific:** Ollama defaults to 4096 tokens for all models regardless of their actual capability. Always set `OLLAMA_CONTEXT_LENGTH` to match your hardware tier — 2048 for Pi Zero, 4096 for Pi 4 (4GB), 8192 for Pi 5 (8GB+). Without this, karya's context budgets will be wrong.
 
-Bake it into a Modelfile for a permanent fix:
+Bake it permanently into a Modelfile:
 
 ```bash
 echo -e "FROM qwen2.5:1.5b\nPARAMETER num_ctx 4096" > Modelfile
 ollama create qwen2.5-4k -f Modelfile
 ```
 
-### llama.cpp direct (lower overhead, better for Pi Zero)
+### llama.cpp direct (lower overhead, best for Pi Zero)
+
+Connects directly to `llama-server` — no Ollama layer. Saves ~150MB RAM. Better for Pi Zero and any device where every megabyte counts.
 
 ```bash
 llama-server -m ~/models/qwen2.5-1.5b-q4_k_m.gguf \
   -c 2048 --port 8080 \
-  --cache-type-k q4_0 --cache-type-v q4_0   # saves RAM
+  --cache-type-k q4_0 --cache-type-v q4_0   # quantised KV cache saves RAM
 karya start --backend llamacpp
 ```
 
@@ -290,8 +399,7 @@ karya start --backend llamacpp
 
 ## Context management
 
-karya fits conversation history into the hardware token budget with a deterministic
-four-step algorithm — no LLM calls, no neural summarisation:
+karya fits conversation history into the hardware token budget with a deterministic four-step algorithm — no LLM calls, no neural summarisation, no second model:
 
 1. **Truncate tool results first** — largest tokens, lowest long-term value
 2. **Drop oldest turn pairs together** — never orphan a tool call
@@ -300,12 +408,12 @@ four-step algorithm — no LLM calls, no neural summarisation:
 
 ### Tool call fallback parser
 
-Small models (1B–3B) frequently break JSON. The parser tries four methods before giving up:
+Small models (1B–3B) frequently break JSON formatting. The parser tries four methods before giving up:
 
 1. `json.loads()` on raw response
 2. Extract from ` ```json ... ``` ` code block
-3. Regex on bare JSON object in the text
-4. Keyword detection in plain text
+3. Regex on bare JSON object anywhere in the text
+4. Keyword detection in plain text ("run ...", "check system")
 
 ---
 
@@ -318,7 +426,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable karya
 sudo systemctl start karya
 
-# Follow logs
+# Follow live logs
 sudo journalctl -u karya -f
 ```
 
@@ -327,20 +435,20 @@ sudo journalctl -u karya -f
 ## CLI reference
 
 ```
-karya start              Start autonomous loop (runs forever)
-  --goals FILE           Path to goals.yaml (default: config/goals.yaml)
-  --dry-run              Log decisions without executing anything
-  --backend ollama|llamacpp
-  --base-url URL         Override backend URL
+karya start                 Start autonomous loop — runs forever
+  --goals FILE              Path to goals.yaml (default: config/goals.yaml)
+  --dry-run                 Log all decisions without executing anything
+  --backend ollama|llamacpp LLM backend (default: ollama)
+  --base-url URL            Override backend URL
 
-karya run-once           Run exactly one cycle and exit
+karya run-once              Run exactly one cycle and exit
   --goals FILE
   --dry-run
   --backend ollama|llamacpp
 
-karya doctor             Check hardware tier, Ollama, llama-server, run priority demo
-karya status             Show world state: goals, facts, recent actions
-karya bench              Measure tokens/sec on current hardware
+karya doctor                Check hardware tier, Ollama, llama-server, HIL status
+karya status                Show world state: goals, facts, recent actions
+karya bench                 Measure tokens/sec on current hardware
   --model MODEL
 ```
 
@@ -348,51 +456,17 @@ karya bench              Measure tokens/sec on current hardware
 
 ## Use cases
 
-### Home and personal
+Step-by-step deployment guides with exact hardware wiring, goals.yaml config, and a table of what karya does in each scenario.
 
-**Self-healing home server** — Pi 4 running nginx, Pi-hole, Plex. karya monitors all three,
-cleans disk when it fills, restarts services on crash. No Home Assistant, no cloud.
-
-**Smart power manager** — Pi Zero connected to smart plug relays. Reads power draw, cuts
-power to idle devices overnight, logs consumption. Hardware cost under £30.
-
-**Offline security system** — PIR sensors trigger karya. Decides whether it is a real
-intrusion based on time of day, prior events, and door sensor state.
-
-### Agriculture and environment
-
-**Autonomous irrigation brain** — deployed in a field with no mobile signal. Reads soil
-moisture, temperature, and light sensors. Opens and closes irrigation valves based on crop
-goals. Runs for weeks without maintenance.
-
-**Greenhouse climate agent** — manages heaters, ventilation fans, grow lights, and humidity
-simultaneously. When multiple goals compete, the priority ranker decides which matters most.
-
-**Air quality guardian** — monitors CO2, VOC, and particulates in a sealed building with no
-internet. Activates ventilation on degraded air, closes intakes during pollution events.
-
-### Industrial and infrastructure
-
-**Predictive maintenance node** — accelerometer on serial port reads vibration signatures
-from factory equipment. Detects deviation from baseline, writes a maintenance alert file.
-
-**Remote pipeline monitor** — deployed at oil, gas, or water sites with zero connectivity.
-Reads pressure and flow sensors, controls shutoff valves via GPIO. Designed for months
-unattended.
-
-**Edge server watchdog** — no GPIO needed. Runs as a systemd service on any Linux server.
-Monitors disk, memory, temperature, and services. Cleans logs, restarts crashed processes.
-
-### Robotics and field deployment
-
-**Robot high-level brain** — sits on top of an Arduino or Pixhawk via serial. Receives
-sensor state, decides the next high-level action, sends commands back.
-
-**Field data collector** — a researcher drops a `.txt` task file onto a USB drive. The file
-watch trigger fires, karya executes the instructions and writes results back to the drive.
-
-**Wildlife monitoring station** — solar-powered, deployed for months. PIR triggers karya on
-motion detection. Logs a timestamped event, triggers a camera, writes a structured record.
+| Guide | Device | Start here if... |
+|-------|--------|------------------|
+| [Edge server watchdog](docs/use-cases/03-edge-server-watchdog.md) | Any Linux | No GPIO hardware — just want to try karya |
+| [Self-healing home server](docs/use-cases/01-self-healing-home-server.md) | Pi 4 (4GB) | Running self-hosted services on a Pi |
+| [Autonomous irrigation](docs/use-cases/02-autonomous-irrigation.md) | Pi 4 (4GB) | Have a garden, greenhouse, or field plot |
+| [Offline intruder response](docs/use-cases/04-offline-intruder-response.md) | Pi 4 (4GB) | Want a context-aware alarm with no cloud |
+| [Predictive maintenance](docs/use-cases/07-predictive-maintenance.md) | Pi 4 (4GB) | Monitoring motors or industrial machinery |
+| [Field data collector](docs/use-cases/06-field-data-collector.md) | Pi 4 (4GB) | Need to send tasks to a remote device |
+| [Wildlife monitoring station](docs/use-cases/05-wildlife-monitoring.md) | Pi Zero 2W | Deploying for months in the field |
 
 ---
 
@@ -402,12 +476,13 @@ motion detection. Logs a timestamped event, triggers a camera, writes a structur
 karya/
 ├── karya/
 │   ├── core/
-│   │   ├── hw_detect.py     # RAM → tier → token budgets
-│   │   ├── state.py         # world state (JSON, survives reboots)
-│   │   ├── context.py       # sliding window trimmer, no LLM needed
-│   │   ├── priority.py      # multi-goal urgency ranker
-│   │   ├── safety.py        # command guard rails
-│   │   └── loop.py          # perception → decision → action
+│   │   ├── hw_detect.py     # RAM → tier → token budgets (auto)
+│   │   ├── state.py         # world state (JSON on disk, survives reboots)
+│   │   ├── context.py       # sliding window trimmer — no LLM needed
+│   │   ├── priority.py      # multi-goal urgency ranker (5 signals)
+│   │   ├── safety.py        # command guard rails (forbidden/confirm/block)
+│   │   ├── hil.py           # human-in-the-loop approval system
+│   │   └── loop.py          # perception → priority → decision → action
 │   ├── backends/
 │   │   ├── ollama.py        # streaming + 4-level tool call parser
 │   │   └── llamacpp.py      # direct llama-server (lower overhead)
@@ -424,13 +499,35 @@ karya/
 │   │   └── serial.py        # serial port listener
 │   └── cli.py               # start / run-once / doctor / status / bench
 ├── config/
-│   └── goals.yaml           # define goals here, no code needed
+│   └── goals.yaml           # define goals here — no code needed
 ├── systemd/
 │   └── karya.service        # boot-time autostart
-├── tests/                   # 62 tests
+├── docs/
+│   ├── why-llm-not-scripts.md
+│   └── use-cases/           # 7 step-by-step deployment guides
+├── tests/                   # 142 tests
 ├── .github/workflows/ci.yml # Python 3.10 / 3.11 / 3.12
 └── pyproject.toml
 ```
+
+---
+
+## Why an LLM and not just cron + scripts?
+
+The short answer: for simple, predictable failures a cron job is fine and faster. karya handles the cases scripts silently fail on.
+
+| What breaks | cron + bash | karya |
+|-------------|-------------|-------|
+| Disk above threshold → clean | ✅ Works | ✅ Works |
+| Service down → restart | ✅ Works | ✅ Works |
+| Service down *because* disk is full → fix root cause first | ❌ Restarts, fails again | ✅ Cleans disk first |
+| Sensor reading: startup transient vs real fault | ❌ Fires alert either way | ✅ Reads history, classifies |
+| Three competing goals with conflicting actions | ❌ First matching rule wins | ✅ Scores all, picks best net action |
+| Novel instruction from field operator via text file | ❌ Impossible | ✅ Reads and executes |
+| Do not act during active backup | ❌ Acts anyway | ✅ Reads process list, waits |
+| Add a new condition to monitor | ❌ Write, test, deploy new script | ✅ One line in goals.yaml |
+
+> **Full explanation with before/after examples →** [docs/why-llm-not-scripts.md](docs/why-llm-not-scripts.md)
 
 ---
 
@@ -443,6 +540,7 @@ karya/
 | No user input needed | ✅ | ❌ | ❌ | ❌ | Partial |
 | GPIO / serial tools | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Priority ranking | ✅ | ❌ | ❌ | ❌ | Rule-based |
+| Human-in-the-loop | ✅ offline-first | ❌ | ❌ | ❌ | ❌ |
 | Context compression | Rule-based | Neural LLM call | Basic | None | N/A |
 | Zero required deps | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Pi Zero support | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -452,40 +550,23 @@ karya/
 
 ## Optional dependencies
 
-The core agent has zero required dependencies — stdlib only.
+The core agent has zero required dependencies — pure Python stdlib.
 
 ```bash
-pip install karya           # core only
-pip install karya[full]     # + pyyaml + psutil
-pip install karya[serial]   # + pyserial
-pip install karya[gpio]     # + RPi.GPIO + gpiozero (Pi only)
-pip install karya[all]      # everything
+pip install karya            # core only — stdlib, zero deps
+pip install karya[full]      # + pyyaml + psutil
+pip install karya[serial]    # + pyserial (serial port tools and triggers)
+pip install karya[gpio]      # + RPi.GPIO + gpiozero (Pi only)
+pip install karya[all]       # everything
 ```
 
----
-
-## Why an LLM and not just cron + scripts?
-
-The most common question about karya. It deserves a direct answer.
-
-For simple, predictable failures — a full disk, a crashed service, a threshold breach —
-**you do not need karya**. A cron job and three lines of bash does that fine, runs faster,
-uses no RAM, and never hallucinates.
-
-karya exists for everything else — the cases scripts silently fail on.
-
-| What breaks | cron + bash | karya |
-|-------------|-------------|-------|
-| Disk above 85% → clean /tmp | ✅ Works perfectly | ✅ Works, slightly slower |
-| Service down → restart | ✅ Works perfectly | ✅ Works, slightly slower |
-| Service down *because* disk is full → fix root cause first | ❌ Restarts anyway, fails again | ✅ Cleans disk first, then restarts |
-| Startup transient vs real sensor fault | ❌ Fires alert either way | ✅ Reads history, classifies correctly |
-| Three competing goals with conflicting actions | ❌ First matching rule wins | ✅ Scores all goals, picks best net action |
-| Novel instruction from a field operator | ❌ Impossible without new code | ✅ Reads and executes from a text file |
-| Do not act during active backup | ❌ Acts anyway | ✅ Reads process list, waits, then acts |
-| Add a new condition to monitor | ❌ Write, test, deploy new script | ✅ One line in goals.yaml |
-
-> **Full explanation with concrete before/after examples →** [Why an LLM and not just cron + scripts?](docs/why-llm-not-scripts.md)
+| Package | License | Used for |
+|---------|---------|----------|
+| pyyaml | MIT | goals.yaml parsing |
+| psutil | BSD-3 | System metrics on non-Linux |
+| pyserial | BSD-3 | Serial port tools and triggers |
+| RPi.GPIO | MIT | Raspberry Pi GPIO (Pi only) |
+| gpiozero | BSD-3 | Alternative GPIO library (Pi only) |
 
 ---
 
@@ -495,14 +576,15 @@ karya exists for everything else — the cases scripts silently fail on.
 - [x] World state (disk-based, survives reboots)
 - [x] Context manager (rule-based sliding window)
 - [x] Multi-goal priority ranker (5 signals, no LLM needed)
-- [x] Safety guard rails
+- [x] Safety guard rails (forbidden / confirm / block)
 - [x] Ollama backend with streaming
 - [x] llama.cpp direct backend
 - [x] Shell + file + system + GPIO + serial tools
 - [x] Cron + file_watch + threshold + GPIO + serial triggers
+- [x] Human-in-the-loop — 7 channels, offline-first
 - [x] CLI (start / run-once / doctor / status / bench)
 - [x] Systemd service
-- [x] 62-test suite (Python 3.10 / 3.11 / 3.12)
+- [x] 82-test suite (Python 3.10 / 3.11 / 3.12)
 - [x] PyPI packaging
 - [ ] llama.cpp subprocess backend (no server needed at all)
 - [ ] Multi-agent cluster over local network
@@ -514,16 +596,18 @@ karya exists for everything else — the cases scripts silently fail on.
 
 ## Contributing
 
-Pull requests are welcome. For major changes, open an issue first.
+Pull requests are welcome. For major changes, open an issue first to discuss.
 
 ```bash
 git clone https://github.com/yourusername/karya
 cd karya
 pip install -e ".[all]"
-python -m pytest          # 62 tests
+python -m pytest          # 142 tests
 ```
 
 Branch naming: `feat/`, `fix/`, `docs/`, `test/`
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add new tools and triggers.
 
 ---
 

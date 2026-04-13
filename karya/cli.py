@@ -32,6 +32,7 @@ def cmd_start(args):
         dry_run=args.dry_run or config.get("dry_run", False),
         safe_gpio_pins=config.get("safe_gpio_pins", []),
         thresholds=config.get("thresholds", []),
+        hil_config=config.get("hil", {}),
     )
     loop.run_forever()
 
@@ -113,6 +114,21 @@ def cmd_doctor(args):
     for i, sg in enumerate(ranked):
         urgency = "URGENT" if sg.score >= 60 else "HIGH" if sg.score >= 30 else "normal"
         print(f"    #{i+1} [{urgency:6s}] score={sg.score:5.1f}  {sg.goal}")
+    # show HIL status
+    hil_cfg = {}
+    try:
+        import yaml
+        with open("config/goals.yaml") as f:
+            hil_cfg = yaml.safe_load(f).get("hil", {})
+    except Exception:
+        pass
+    hil_enabled = hil_cfg.get("enabled", False)
+    hil_channel = hil_cfg.get("channel", "file")
+    print(f"\n  HIL (human-in-the-loop):")
+    if hil_enabled:
+        print(f"  [ok] enabled — channel: {hil_channel} | timeout: {hil_cfg.get('timeout_sec',120)}s")
+    else:
+        print(f"  [--] disabled (set hil.enabled: true in goals.yaml to enable)")
     print()
 
 
@@ -187,6 +203,8 @@ def _load_goals(goals_file: str) -> tuple[list[str], dict]:
             "base_url": data.get("ollama", {}).get("base_url", "http://localhost:11434"),
             "dry_run": data.get("dry_run", False),
             "safe_gpio_pins": data.get("safe_gpio_pins", []),
+            "thresholds": data.get("thresholds", []),
+            "hil": data.get("hil", {}),
         }
         return goals, config
     except ImportError:
