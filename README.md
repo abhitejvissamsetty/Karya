@@ -464,6 +464,31 @@ pip install karya[all]      # everything
 
 ---
 
+## Why an LLM and not just cron + scripts?
+
+The most common question about karya. It deserves a direct answer.
+
+For simple, predictable failures — a full disk, a crashed service, a threshold breach —
+**you do not need karya**. A cron job and three lines of bash does that fine, runs faster,
+uses no RAM, and never hallucinates.
+
+karya exists for everything else — the cases scripts silently fail on.
+
+| What breaks | cron + bash | karya |
+|-------------|-------------|-------|
+| Disk above 85% → clean /tmp | ✅ Works perfectly | ✅ Works, slightly slower |
+| Service down → restart | ✅ Works perfectly | ✅ Works, slightly slower |
+| Service down *because* disk is full → fix root cause first | ❌ Restarts anyway, fails again | ✅ Cleans disk first, then restarts |
+| Startup transient vs real sensor fault | ❌ Fires alert either way | ✅ Reads history, classifies correctly |
+| Three competing goals with conflicting actions | ❌ First matching rule wins | ✅ Scores all goals, picks best net action |
+| Novel instruction from a field operator | ❌ Impossible without new code | ✅ Reads and executes from a text file |
+| Do not act during active backup | ❌ Acts anyway | ✅ Reads process list, waits, then acts |
+| Add a new condition to monitor | ❌ Write, test, deploy new script | ✅ One line in goals.yaml |
+
+> **Full explanation with concrete before/after examples →** [Why an LLM and not just cron + scripts?](docs/why-llm-not-scripts.md)
+
+---
+
 ## Roadmap
 
 - [x] Hardware tier detection + token budgets
