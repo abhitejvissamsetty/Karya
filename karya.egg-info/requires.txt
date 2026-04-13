@@ -1,0 +1,16 @@
+
+[all]
+pyyaml>=6.0
+psutil>=5.9
+pyserial>=3.5
+
+[full]
+pyyaml>=6.0
+psutil>=5.9
+
+[gpio]
+RPi.GPIO>=0.7
+gpiozero>=2.0
+
+[serial]
+pyserial>=3.5

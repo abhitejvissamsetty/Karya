@@ -1,0 +1,203 @@
+Metadata-Version: 2.4
+Name: karya
+Version: 0.1.0
+Summary: Offline autonomous agent for low-power hardware (Raspberry Pi, edge devices)
+License: MIT
+Project-URL: Homepage, https://github.com/yourusername/karya
+Project-URL: Issues, https://github.com/yourusername/karya/issues
+Project-URL: Changelog, https://github.com/yourusername/karya/blob/main/CHANGELOG.md
+Keywords: llm,agent,raspberry-pi,edge-ai,offline,autonomous,iot
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: System :: Hardware
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Classifier: Environment :: No Input/Output (Daemon)
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Provides-Extra: full
+Requires-Dist: pyyaml>=6.0; extra == "full"
+Requires-Dist: psutil>=5.9; extra == "full"
+Provides-Extra: gpio
+Requires-Dist: RPi.GPIO>=0.7; extra == "gpio"
+Requires-Dist: gpiozero>=2.0; extra == "gpio"
+Provides-Extra: serial
+Requires-Dist: pyserial>=3.5; extra == "serial"
+Provides-Extra: all
+Requires-Dist: pyyaml>=6.0; extra == "all"
+Requires-Dist: psutil>=5.9; extra == "all"
+Requires-Dist: pyserial>=3.5; extra == "all"
+
+# karya
+
+**Offline autonomous agent for low-power hardware.**  
+Runs on Raspberry Pi, cheap VPS, old laptops — no internet, no cloud, no user input once started.
+
+```
+sensor/event → model decides → hardware acts
+      ↑                              ↓
+      └──────── world state ─────────┘
+```
+
+## What it does
+
+karya wakes up on a configurable interval, reads the current system state,
+asks a local LLM what to do, and executes the decision — shell commands, file
+writes, GPIO control. It runs forever, completely offline, guided only by the
+goals you define in `goals.yaml`.
+
+No Hermes Agent overhead. No neural compression. No second LLM call just to
+summarize. Pure rule-based context management tuned for tiny hardware.
+
+---
+
+## Hardware requirements
+
+| Device | RAM | Model used | Tokens/sec |
+|--------|-----|-----------|------------|
+| Pi Zero 2W | 512MB | tinyllama:1.1b | 2–4 |
+| Pi 4 (4GB) | 4GB | qwen2.5:1.5b | 8–12 |
+| Pi 4/5 (8GB) | 8GB | qwen2.5:3b | 4–7 |
+| Pi 5 (16GB) | 16GB | qwen2.5:7b | 2–4 |
+
+karya auto-detects your hardware tier on startup and sets context budgets accordingly.
+
+---
+
+## Install
+
+```bash
+# 1. Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# 2. Pull a model (auto-recommended based on your RAM)
+ollama pull qwen2.5:1.5b
+
+# 3. Install karya
+pip install karya          # or: pipx install karya
+
+# 4. Check everything works
+karya doctor
+```
+
+---
+
+## Quickstart
+
+```bash
+# Edit your goals
+nano config/goals.yaml
+
+# Dry run — see decisions without executing
+karya run-once --dry-run
+
+# Start the autonomous loop
+karya start
+
+# Check current world state
+karya status
+
+# Benchmark inference speed on your hardware
+karya bench
+```
+
+---
+
+## goals.yaml
+
+This is how you give the agent its mission. No code changes needed.
+
+```yaml
+goals:
+  - "keep disk usage below 85% — clean /tmp and logs if needed"
+  - "restart nginx if it stops running"
+  - "alert if CPU temperature exceeds 75°C"
+  - "log system metrics every cycle to /var/log/karya/metrics.csv"
+
+constraints:
+  - "never delete files in /home or /etc"
+  - "if unsure, log and skip"
+
+cycle_interval_seconds: 30
+dry_run: false
+safe_gpio_pins: []
+
+ollama:
+  base_url: "http://localhost:11434"
+  model: ""   # leave blank for auto-detect
+```
+
+---
+
+## Run on boot (Raspberry Pi)
+
+```bash
+sudo cp systemd/karya.service /etc/systemd/system/
+sudo systemctl enable karya
+sudo systemctl start karya
+sudo journalctl -u karya -f   # follow logs
+```
+
+---
+
+## Architecture
+
+```
+karya/
+├── core/
+│   ├── hw_detect.py   # RAM probe → tier → token budgets
+│   ├── state.py       # world state (JSON on disk, survives reboots)
+│   ├── context.py     # sliding window, no LLM needed
+│   ├── safety.py      # command guard rails
+│   └── loop.py        # perception → decision → action
+├── backends/
+│   └── ollama.py      # streaming + 4-level tool call parser
+├── tools/
+│   ├── ShellTool      # safe shell execution
+│   ├── FileTool       # read/write with path limits
+│   └── SystemInfoTool # cpu/mem/disk/temp from /proc
+├── triggers/          # (coming) gpio, serial, file_watch, cron
+└── cli.py             # karya start/run-once/doctor/status/bench
+```
+
+**Context management** — no neural summarization. Pure rule-based:
+1. Truncate tool results first (biggest, lowest value)
+2. Drop oldest turn pairs together
+3. Shorten system prompt if needed
+4. Hard truncate current message as last resort
+
+**Tool call parsing** — 4-level fallback for small models that break JSON:
+1. Native JSON parse
+2. Extract from ```json block
+3. Regex on bare JSON object
+4. Keyword detection in plain text
+
+---
+
+## Roadmap
+
+- [x] Hardware tier detection + token budgets
+- [x] World state (disk-based, survives reboots)
+- [x] Context manager (rule-based sliding window)
+- [x] Safety guard rails
+- [x] Ollama backend with streaming
+- [x] Shell + file + system tools
+- [x] Autonomous agent loop
+- [x] CLI (start / run-once / doctor / status / bench)
+- [x] Systemd service
+- [ ] GPIO trigger + tool
+- [ ] Serial port trigger + tool
+- [ ] File watch trigger
+- [ ] llama.cpp direct backend (no Ollama)
+- [ ] Multi-goal priority ranking
+- [ ] PyPI release
+
+---
+
+## License
+
+MIT

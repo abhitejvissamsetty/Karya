@@ -1,0 +1,224 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: pip install -e ".[full]"
+
+      - name: hw_detect
+        run: |
+          python -c "
+          from karya.core.hw_detect import detect_tier, get_ram_gb
+          tier = detect_tier()
+          assert tier.name in ('nano','micro','small','base')
+          assert tier.max_ctx_tokens > 0
+          print(f'tier={tier.name} ctx={tier.max_ctx_tokens}')
+          "
+
+      - name: state manager
+        run: |
+          python -c "
+          import tempfile, pathlib
+          from karya.core.state import StateManager
+          sm = StateManager(pathlib.Path(tempfile.mkdtemp()))
+          sm.set_goals(['keep disk below 85%'])
+          sm.update_fact('disk_used_pct', 91)
+          sm.record_action('cron','shell',{'command':'df -h'},'disk at 91%',True)
+          block = sm.to_prompt_block()
+          assert 'disk below 85' in block
+          assert 'disk_used_pct' in block
+          print('state manager ok')
+          "
+
+      - name: context manager
+        run: |
+          python -c "
+          from karya.core.context import ContextManager, estimate_tokens
+          assert estimate_tokens('hello world') == 2
+          cm = ContextManager(512, 100, 80, 200)
+          msgs = cm.build_messages('sys', [], 'user msg')
+          assert cm.fits(msgs)
+          print('context manager ok')
+          "
+
+      - name: safety guard
+        run: |
+          python -c "
+          from karya.core.safety import SafetyGuard
+          g = SafetyGuard(dry_run=True)
+          ok, _ = g.approve_shell('df -h')
+          assert not ok   # dry_run blocks everything
+          g2 = SafetyGuard()
+          ok2, _ = g2.approve_shell('rm -rf /')
+          assert not ok2  # forbidden
+          ok3, _ = g2.approve_shell('df -h')
+          assert ok3      # safe
+          print('safety guard ok')
+          "
+
+      - name: priority ranker
+        run: |
+          python -c "
+          from karya.core.priority import GoalPrioritizer, build_priority_prompt
+          p = GoalPrioritizer()
+          goals = [
+            'keep disk below 85%',
+            'restart nginx if down',
+            'log metrics every cycle',
+            'alert if CPU temperature exceeds 75C — critical',
+          ]
+          ranked = p.rank(goals,
+            current_facts={'disk_used_pct': 91, 'cpu_temp_c': 80},
+            trigger_source='threshold:disk_used_pct',
+            failed_goals=['restart nginx if down'],
+          )
+          # breaching disk goal should be top ranked
+          assert ranked[0].score >= 60, f'expected urgent score, got {ranked[0].score}'
+          # failed goal should rank higher than stale log goal
+          failed_idx = next(i for i,s in enumerate(ranked) if 'nginx' in s.goal)
+          log_idx    = next(i for i,s in enumerate(ranked) if 'log' in s.goal)
+          assert failed_idx < log_idx, 'failed goal should outrank stale log goal'
+          block = build_priority_prompt(ranked, {})
+          assert '>>>' in block
+          print(f'priority ranker ok — top: {ranked[0].goal[:40]} score={ranked[0].score}')
+          "
+
+      - name: tools
+        run: |
+          python -c "
+          import json
+          from karya.tools import ShellTool, FileTool, SystemInfoTool, ToolRegistry
+          from karya.tools.gpio import GPIOTool
+          from karya.tools.serial_tool import SerialTool
+          from karya.core.safety import SafetyGuard
+
+          r = ToolRegistry(SafetyGuard())
+          r.register(ShellTool())
+          r.register(FileTool())
+          r.register(SystemInfoTool())
+          r.register(GPIOTool())
+          r.register(SerialTool())
+
+          # shell
+          out, ok = r.execute('shell', {'command': 'echo hello'})
+          assert ok and 'hello' in out
+
+          # system_info
+          out, ok = r.execute('system_info', {'metrics': ['disk','memory']})
+          assert ok
+          data = json.loads(out)
+          assert 'disk' in data and 'memory' in data
+
+          # gpio graceful degradation
+          out, _ = r.execute('gpio', {'action': 'read', 'pin': 17})
+          assert 'gpio' in out.lower() or 'HIGH' in out or 'LOW' in out
+
+          # serial graceful degradation
+          out, _ = r.execute('serial', {'action': 'read', 'port': '/dev/ttyFAKE'})
+          assert 'pyserial' in out or 'cannot open' in out
+
+          print('all tools ok')
+          "
+
+      - name: triggers
+        run: |
+          python -c "
+          import time, tempfile, pathlib
+          from karya.triggers.cron import CronTrigger
+          from karya.triggers.file_watch import FileWatchTrigger
+          from karya.triggers.threshold import ThresholdTrigger, _read_metric
+          from karya.triggers.gpio import GPIOTrigger
+
+          # cron
+          fired = []
+          t = CronTrigger(1, lambda e: fired.append(e), fire_immediately=True)
+          t.start(); time.sleep(0.3); t.stop()
+          assert len(fired) >= 1
+
+          # file watch
+          tmp = pathlib.Path(tempfile.mkdtemp())
+          events = []
+          fw = FileWatchTrigger(tmp, poll_interval=0.2, callback=lambda e: events.append(e))
+          fw.start(); time.sleep(0.1)
+          (tmp / 'task.txt').write_text('test task')
+          time.sleep(0.5); fw.stop()
+          assert len(events) == 1 and 'test task' in events[0].data['content']
+
+          # threshold (always fires at -1)
+          te = []
+          th = ThresholdTrigger('disk_used_pct', '>', -1, check_every=1, callback=lambda e: te.append(e))
+          th.start(); time.sleep(1.5); th.stop()
+          assert len(te) >= 1
+
+          # gpio simulation mode (non-Pi)
+          ge = []
+          gt = GPIOTrigger(17, callback=lambda e: ge.append(e))
+          gt.start(); time.sleep(0.2); gt.stop()
+          # no events expected on non-Pi, just no crash
+
+          print('all triggers ok')
+          "
+
+      - name: backends
+        run: |
+          python -c "
+          from karya.backends.ollama import OllamaBackend
+          from karya.backends.llamacpp import LlamaCppBackend
+
+          # Ollama — not running in CI, just check init + is_available returns bool
+          ob = OllamaBackend('test-model')
+          assert isinstance(ob.is_available(), bool)
+
+          # llama.cpp — same
+          lb = LlamaCppBackend()
+          assert isinstance(lb.is_available(), bool)
+
+          # message → prompt conversion
+          messages = [
+            {'role': 'system', 'content': 'You are helpful.'},
+            {'role': 'user', 'content': 'Hello'},
+          ]
+          prompt = lb._messages_to_prompt(messages)
+          assert '<|im_start|>system' in prompt
+          assert '<|im_start|>user' in prompt
+          assert '<|im_start|>assistant' in prompt
+
+          # tool call extraction
+          resp = '{\"tool\": \"shell\", \"args\": {\"command\": \"df -h\"}}'
+          result = lb.extract_tool_call(resp)
+          assert result['tool'] == 'shell'
+          assert result['args']['command'] == 'df -h'
+
+          print('backends ok')
+          "
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pyflakes
+      - name: pyflakes
+        run: |
+          python -m pyflakes karya/ 2>&1 | grep -v "^$" | grep -v "__pycache__" || true

@@ -1,0 +1,31 @@
+# karya goals.yaml
+# Define what the agent is trying to achieve.
+# The agent reads this on startup and works towards these goals autonomously.
+# No internet needed. No user input needed once started.
+
+goals:
+  - "keep disk usage below 85% — clean /tmp and logs if needed"
+  - "restart nginx if it stops running"
+  - "alert if CPU temperature exceeds 75°C by writing to /tmp/karya_alert.txt"
+  - "log system metrics every cycle to /var/log/karya/metrics.csv"
+
+constraints:
+  - "never delete files in /home or /etc"
+  - "never stop or disable systemd services — only restart them"
+  - "if unsure, log the situation and skip the action"
+  - "prefer the least destructive action available"
+
+# How often the agent wakes up and checks (seconds)
+cycle_interval_seconds: 30
+
+# Dry run — set to true to log decisions without executing anything
+dry_run: false
+
+# GPIO pins the agent is allowed to write to (empty = GPIO disabled)
+safe_gpio_pins: []
+
+# Ollama settings
+ollama:
+  base_url: "http://localhost:11434"
+  # Leave model blank to auto-detect from hardware tier
+  model: ""
